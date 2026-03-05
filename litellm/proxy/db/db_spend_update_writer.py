@@ -1063,6 +1063,23 @@ class DBSpendUpdateWriter:
                 proxy_logging_obj=proxy_logging_obj,
                 end_user_list_transactions=end_user_list_transactions,
             )
+
+            # Invalidate cache for updated end users
+            # This ensures budget checks read fresh spend data from the database
+            if proxy_logging_obj is not None:
+                user_api_key_cache = proxy_logging_obj.call_details.get(
+                    "user_api_key_cache"
+                )
+                if user_api_key_cache is not None:
+                    for end_user_id in end_user_list_transactions.keys():
+                        cache_key = "end_user_id:{}".format(end_user_id)
+                        await user_api_key_cache.async_delete_cache(
+                            key=cache_key
+                        )
+                        verbose_proxy_logger.debug(
+                            f"Invalidated end user cache for end_user_id={end_user_id}"
+                        )
+
         ### UPDATE KEY TABLE ###
         key_list_transactions = db_spend_update_transactions["key_list_transactions"]
         verbose_proxy_logger.debug(

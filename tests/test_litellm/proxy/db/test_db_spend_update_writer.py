@@ -1091,6 +1091,135 @@ async def test_commit_key_spend_updates_includes_last_active():
 
 
 @pytest.mark.asyncio
+async def test_commit_end_user_spend_invalidates_cache():
+    """
+    Test that _commit_spend_updates_to_db invalidates the end-user cache
+    after writing spend updates to the database.
+
+    Regression test for: end-user cache entries were not invalidated after
+    spend updates, causing stale spend values to be used in budget checks.
+    """
+    db_writer = DBSpendUpdateWriter()
+
+    # Create mock prisma client with transaction support
+    mock_batcher = MagicMock()
+    mock_batcher.litellm_endusertable = MagicMock()
+    mock_batcher.litellm_endusertable.upsert = MagicMock()
+    mock_batcher.litellm_verificationtoken = MagicMock()
+    mock_batcher.litellm_verificationtoken.update_many = MagicMock()
+    mock_batcher.litellm_usertable = MagicMock()
+    mock_batcher.litellm_usertable.update_many = MagicMock()
+    mock_batcher.litellm_teamtable = MagicMock()
+    mock_batcher.litellm_teamtable.update_many = MagicMock()
+    mock_batcher.litellm_organizationtable = MagicMock()
+    mock_batcher.litellm_organizationtable.update_many = MagicMock()
+
+    mock_transaction = AsyncMock()
+    mock_transaction.__aenter__ = AsyncMock(return_value=mock_transaction)
+    mock_transaction.__aexit__ = AsyncMock(return_value=False)
+    mock_transaction.batch_ = MagicMock(
+        return_value=AsyncMock(
+            __aenter__=AsyncMock(return_value=mock_batcher),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
+
+    mock_prisma_client = MagicMock()
+    mock_prisma_client.db = MagicMock()
+    mock_prisma_client.db.tx = MagicMock(return_value=mock_transaction)
+
+    # Create mock proxy_logging_obj with user_api_key_cache
+    mock_cache = AsyncMock()
+    mock_proxy_logging = MagicMock()
+    mock_proxy_logging.call_details = {"user_api_key_cache": mock_cache}
+
+    db_spend_update_transactions = {
+        "user_list_transactions": {},
+        "end_user_list_transactions": {"end_user_1": 0.05, "end_user_2": 0.10},
+        "key_list_transactions": {},
+        "team_list_transactions": {},
+        "team_member_list_transactions": {},
+        "org_list_transactions": {},
+        "tag_list_transactions": {},
+    }
+
+    with patch("litellm.proxy.utils._raise_failed_update_spend_exception"):
+        await db_writer._commit_spend_updates_to_db(
+            prisma_client=mock_prisma_client,
+            n_retry_times=0,
+            proxy_logging_obj=mock_proxy_logging,
+            db_spend_update_transactions=db_spend_update_transactions,
+        )
+
+    # Verify cache was invalidated for both end users
+    expected_calls = [
+        call(key="end_user_id:end_user_1"),
+        call(key="end_user_id:end_user_2"),
+    ]
+    mock_cache.async_delete_cache.assert_has_calls(expected_calls, any_order=True)
+    assert mock_cache.async_delete_cache.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_commit_end_user_spend_no_cache_invalidation_when_no_transactions():
+    """
+    Test that no cache invalidation happens when there are no end-user
+    spend transactions.
+    """
+    db_writer = DBSpendUpdateWriter()
+
+    mock_cache = AsyncMock()
+    mock_proxy_logging = MagicMock()
+    mock_proxy_logging.call_details = {"user_api_key_cache": mock_cache}
+
+    # Create mock prisma client (needed for other entity types in _commit)
+    mock_batcher = MagicMock()
+    mock_batcher.litellm_verificationtoken = MagicMock()
+    mock_batcher.litellm_verificationtoken.update_many = MagicMock()
+    mock_batcher.litellm_usertable = MagicMock()
+    mock_batcher.litellm_usertable.update_many = MagicMock()
+    mock_batcher.litellm_teamtable = MagicMock()
+    mock_batcher.litellm_teamtable.update_many = MagicMock()
+    mock_batcher.litellm_organizationtable = MagicMock()
+    mock_batcher.litellm_organizationtable.update_many = MagicMock()
+
+    mock_transaction = AsyncMock()
+    mock_transaction.__aenter__ = AsyncMock(return_value=mock_transaction)
+    mock_transaction.__aexit__ = AsyncMock(return_value=False)
+    mock_transaction.batch_ = MagicMock(
+        return_value=AsyncMock(
+            __aenter__=AsyncMock(return_value=mock_batcher),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
+
+    mock_prisma_client = MagicMock()
+    mock_prisma_client.db = MagicMock()
+    mock_prisma_client.db.tx = MagicMock(return_value=mock_transaction)
+
+    db_spend_update_transactions = {
+        "user_list_transactions": {},
+        "end_user_list_transactions": {},
+        "key_list_transactions": {},
+        "team_list_transactions": {},
+        "team_member_list_transactions": {},
+        "org_list_transactions": {},
+        "tag_list_transactions": {},
+    }
+
+    with patch("litellm.proxy.utils._raise_failed_update_spend_exception"):
+        await db_writer._commit_spend_updates_to_db(
+            prisma_client=mock_prisma_client,
+            n_retry_times=0,
+            proxy_logging_obj=mock_proxy_logging,
+            db_spend_update_transactions=db_spend_update_transactions,
+        )
+
+    # No end-user cache invalidation should happen
+    mock_cache.async_delete_cache.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_update_database_creates_single_task():
     """
     Test that update_database() fires exactly 1 asyncio.create_task() call
